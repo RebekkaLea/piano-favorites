@@ -1,0 +1,99 @@
+name: Build Site with Clean navtitle Navigation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Pandoc and LaTeX
+      run: sudo apt-get update && sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-plain-generic
+
+    - name: Prepare output and assets
+      run: |
+        mkdir -p output/assets
+        cp assets/style.css output/assets/
+        cp assets/footer.html output/assets/
+        if [ -f assets/cover.jpg ]; then cp assets/cover.jpg output/assets/; fi
+
+    - name: Generate Header with Clean navtitle Navigation
+      run: |
+        echo '<header><h1>Project Documentation</h1></header>' > output/assets/header.html
+        echo '<nav>' >> output/assets/header.html
+        echo '<a href="index.html">Home</a>' >> output/assets/header.html
+
+        for file in $(ls src/[0-9][0-9]-*.md | sort); do
+          name=$(basename "$file" .md)
+          outname="${name#*-}.html"
+          navtitle=$(sed -n '/^navtitle:/s/^navtitle:[ ]*//p' "$file" | head -1 | tr -d '\"' | xargs)
+          if [ -z "$navtitle" ]; then
+            navtitle=$(grep -m 1 '^# ' "$file" | sed 's/^# *//')
+          fi
+          echo "<a href=$outname>$navtitle</a>" >> output/assets/header.html
+        done
+
+        echo '</nav><main>' >> output/assets/header.html
+
+    - name: Generate PDF
+      run: |
+        pandoc src/*.md \
+          --metadata-file=metadata.yaml \
+          --pdf-engine=xelatex \
+          --toc \
+          --include-before-body=assets/cover.tex \
+          -o output/document.pdf
+
+    - name: Generate EPUB
+      run: |
+        pandoc src/*.md \
+          --metadata-file=metadata.yaml \
+          --toc \
+          --epub-cover-image=assets/cover.jpg \
+          -o output/document.epub
+
+    - name: Generate HTML Pages with title metadata
+      run: |
+        for file in $(ls src/*.md); do
+          name=$(basename "$file" .md)
+          case "$name" in
+            index) outname="index.html" ;;
+            [0-9][0-9]-*) outname="${name#*-}.html" ;;
+            *) outname="${name}.html" ;;
+          esac
+
+          title=$(sed -n '/^title:/s/^title:[ ]*//p' "$file" | head -1 | xargs)
+          if [ -z "$title" ]; then
+            title=$(grep -m 1 '^# ' "$file" | sed 's/^# *//')
+          fi
+
+          pandoc "$file" \
+            -s \
+            --toc \
+            --metadata title="$title" \
+            --css=assets/style.css \
+            --include-before-body=output/assets/header.html \
+            --include-after-body=output/assets/footer.html \
+            -o output/"$outname"
+        done
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: site-outputs
+        path: output/
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./output
+        publish_branch: gh-pages
+        force_orphan: true
